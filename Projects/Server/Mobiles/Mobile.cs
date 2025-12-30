@@ -383,7 +383,6 @@ public partial class Mobile : IHued, IComparable<Mobile>, ISpawnable, IObjectPro
 
     public static bool DragEffects { get; set; } = true;
 
-    [CommandProperty(AccessLevel.GameMaster)]
     public Race Race
     {
         get => m_Race ??= Race.DefaultRace;
@@ -400,6 +399,13 @@ public partial class Mobile : IHued, IComparable<Mobile>, ISpawnable, IObjectPro
 
             OnRaceChange(oldRace);
         }
+    }
+
+    [CommandProperty(AccessLevel.GameMaster)]
+    public EnumRaces SetRace
+    {
+        get { return Race.ERace; }
+        set { Race = Race.Races[(int)value]; }
     }
 
     public virtual double RacialSkillBonus => 0;

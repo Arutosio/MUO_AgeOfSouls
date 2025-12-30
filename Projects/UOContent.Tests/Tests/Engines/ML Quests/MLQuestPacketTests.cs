@@ -10,9 +10,7 @@ public class MLQuestPacketTests
     private class MockedRace : Race
     {
         public MockedRace(
-            int raceID,
-            int raceIndex,
-            string name,
+            EnumRaces eRace,
             string pluralName,
             int maleBody,
             int femaleBody,
@@ -20,9 +18,7 @@ public class MLQuestPacketTests
             int femaleGhostBody,
             Expansion requiredExpansion
         ) : base(
-            raceID,
-            raceIndex,
-            name,
+            eRace,
             pluralName,
             maleBody,
             femaleBody,
@@ -51,14 +47,12 @@ public class MLQuestPacketTests
     }
 
     [Theory]
-    [InlineData(true, 1)]
-    [InlineData(false, 2)]
-    public void TestRaceChanger(bool female, int raceId)
+    [InlineData(true, EnumRaces.Human)]
+    [InlineData(false, EnumRaces.Elf)]
+    public void TestRaceChanger(bool female, EnumRaces eRace)
     {
         var race = new MockedRace(
-            raceId,
-            0,
-            "Test Race",
+            eRace,
             "Test Races",
             0x1,
             0x2,
