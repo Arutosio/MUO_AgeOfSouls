@@ -438,7 +438,7 @@ namespace Server.CursedSoulsContent.GumpSystem
             AddLabel(40, 160, 0x480, $"Expansion Cost Multiplier: {_stone.ExpansionCostMultiplier:N1}x");
 
             int y = 200;
-            int[] expansionAmounts = { 5, 10, 25 };
+            int[] expansionAmounts = { 5, 10, 15 };
             int[] expansionCosts = { 10000, 18000, 40000 };
 
             for (int i = 0; i < expansionAmounts.Length; i++)

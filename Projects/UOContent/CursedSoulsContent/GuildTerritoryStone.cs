@@ -51,13 +51,14 @@ namespace Server.CursedSoulsContent
         {
             Name = "Guild Territory Stone";
             Movable = true;
+            Weight = 500;
 
             // ---- Region geometry ----
             _radius = 5;
             _regionPriority = 50;
 
             // ---- Capture rules ----
-            _captureRange = 10;
+            _captureRange = _radius;
             _captureTime = TimeSpan.FromMinutes(1);
             _tickRate = TimeSpan.FromSeconds(2);
 
@@ -79,7 +80,7 @@ namespace Server.CursedSoulsContent
             _guardStrength = 5;
             _dailyTax = 100;
             _goldTreasury = 0;
-            _maxRadius = 50;
+            _maxRadius = 10;
             _expansionCostMultiplier = 1.0;
 
             _vendorCost = 5000;
@@ -93,6 +94,7 @@ namespace Server.CursedSoulsContent
         }
 
         #region PUBLIC PROPERTIES Get&Set (GM)
+
         // ---- Region geometry ----
         [CommandProperty(AccessLevel.GameMaster)]
         [SerializableProperty(0)]
@@ -130,7 +132,7 @@ namespace Server.CursedSoulsContent
             get => _captureRange;
             set
             {
-                _captureRange = Math.Max(1, Math.Min(30, value));
+                _captureRange = Math.Max(1, Math.Min(_maxRadius, value));
                 InvalidateProperties();
                 this.MarkDirty();
             }
@@ -486,7 +488,23 @@ namespace Server.CursedSoulsContent
 
         #endregion PUBLIC PROPERTIES Get&Set
 
+        // -- PROPERTIES / TOOLTIP ----
+        public override void GetProperties(IPropertyList list)
+        {
+            base.GetProperties(list);
+
+            list.Add($"Owner: " + (OwnerGuild != null ? OwnerGuild.Name : "Unclaimed"));
+            list.Add($"Radius: {Radius * 2}x{Radius * 2}");
+            if (OwnerGuild == null)
+            {
+                list.Add($"Capture Range: {CaptureRange}");
+                list.Add($"Capture Time: {CaptureTime.TotalMinutes:0.#} min");
+                list.Add($"Capture Progress: {PercentString()}");
+            }
+        }
+
         #region ON EVENTS
+
         public override void OnLocationChange(Point3D oldLocation)
         {
             base.OnLocationChange(oldLocation);
@@ -517,31 +535,59 @@ namespace Server.CursedSoulsContent
 
         public override void OnDoubleClick(Mobile from)
         {
-            if (Movable)
-            {
-                from.SendMessage("This guild territory stone must be placed before it can be used.");
-                return;
-            }
-            else
-            {
-                if (OwnerGuild == null)
-                {
-                    ToggleOnOffCapture(from);
-                }
-                if (from is PlayerMobile pm && GuildTerritoryManagementGump.CanManage(pm, this))
-                {
-                    OpenManagementGump(from);
-                }
-            }
-
-
             if (from == null || from.Deleted)
                 return;
 
             if (!from.InRange(GetWorldLocation(), 2))
             {
-                from.SendMessage("You are too far away.");
+                from.SendMessage(0x22, "You are too far away. You must be within 2 tiles.");
                 return;
+            }
+
+            //if (Movable)
+            //{
+            //    ShowPlacementHelp(from);
+            //    from.SendMessage(0x22, "This guild territory stone must be placed on the ground before it can be used.");
+            //    from.SendMessage("Use the stone item on the ground to place it, then double-click to manage.");
+            //    return;
+            //}
+            //else
+            //{
+            //    if (OwnerGuild == null && CurrentCaptorGuild == null)
+            //    {
+            //        // Verifica se l'area è libera
+            //        string errorMessage;
+            //        if (!IsAreaClearForTerritoryDetailed(out errorMessage))
+            //        {
+            //            from.SendMessage(0x22, errorMessage);
+            //            return;
+            //        }
+            //        ToggleOnOffCapture(from);
+            //    }
+            //    if (from is PlayerMobile pm && GuildTerritoryManagementGump.CanManage(pm, this))
+            //    {
+            //        OpenManagementGump(from);
+            //    }
+            //}
+
+            if (OwnerGuild != null)
+            {
+                if (from is PlayerMobile pm && GuildTerritoryManagementGump.CanManage(pm, this))
+                {
+                    OpenManagementGump(from);
+                }
+            }
+            else if (CurrentCaptorGuild == null)
+            {
+                // Verifica se l'area è libera
+                string errorMessage;
+                ShowPlacementHelp(from);
+                if (!IsAreaClearForTerritoryDetailed(out errorMessage))
+                {
+                    from.SendMessage(0x22, errorMessage);
+                    return;
+                }
+                ToggleOnOffCapture(from);
             }
         }
 
@@ -601,8 +647,9 @@ namespace Server.CursedSoulsContent
             int baseCost = amount * 2000;
             int cost = (int)(baseCost * _expansionCostMultiplier);
 
-            if (payer.Backpack != null && payer.Backpack.ConsumeTotal(typeof(Gold), cost))
+            if ((GoldTreasury - cost) >= 0)
             {
+                GoldTreasury -= cost;
                 Radius = newRadius;
                 RebuildRegion();
                 payer.SendMessage($"Territory expanded by {amount} tiles. New radius: {Radius}.");
@@ -667,37 +714,60 @@ namespace Server.CursedSoulsContent
         }
 
         // ------ CHECK TERRITORY --------
-        private bool IsAreaClearForTerritory(Mobile from = null)
+        // Nuovo metodo per messaggi dettagliati
+        private bool IsAreaClearForTerritoryDetailed(out string errorMessage)
         {
+            errorMessage = null;
+
             if (Map == null || Map == Map.Internal)
-                return true;
+            {
+                errorMessage = "The stone must be placed on a valid map.";
+                return false;
+            }
 
             // Controllo 1: Altre pietre troppo vicine
-            if (IsTooCloseToAnotherTerritoryStone())
+            if (IsTooCloseToAnotherTerritoryStoneDetailed(out string stoneError))
             {
-                from?.SendMessage("The guild stone need to be distance another stone.");
+                errorMessage = stoneError;
                 return false;
             }
 
             // Controllo 2: Altre regioni nell'area
-            if (AreaOverlapsWithAnyRegion())
+            if (AreaOverlapsWithAnyRegionDetailed(out string regionError))
             {
+                errorMessage = regionError;
                 return false;
             }
 
             // Controllo 3: Case o edifici player nell'area
-            if (AreaContainsPlayerHouses())
+            if (AreaContainsPlayerHousesDetailed(out string houseError))
             {
+                errorMessage = houseError;
                 return false;
             }
 
             return true;
         }
-
-        private bool IsTooCloseToAnotherTerritoryStone()
+        // Metodo esistente aggiornato per compatibilità
+        private bool IsAreaClearForTerritory(Mobile from = null)
         {
-            // Calcola la distanza minima richiesta (doppio raggio massimo + buffer)
-            int requiredDistance = (MaxRadius * 2) + MaxRadius; //MIN_DISTANCE_BETWEEN_STONES;
+            string errorMessage;
+            bool isClear = IsAreaClearForTerritoryDetailed(out errorMessage);
+
+            if (!isClear && from != null)
+            {
+                from.SendMessage(0x22, errorMessage);
+            }
+
+            return isClear;
+        }
+
+        private bool IsTooCloseToAnotherTerritoryStoneDetailed(out string errorMessage)
+        {
+            errorMessage = null;
+
+            // Calcola la distanza minima richiesta: somma dei raggi + margine di sicurezza
+            int requiredDistance = CalculateMinimumSeparationDistance();
 
             foreach (Item item in World.Items.Values)
             {
@@ -707,9 +777,18 @@ namespace Server.CursedSoulsContent
                     otherStone.Map == this.Map)
                 {
                     double distance = GetDistance(this.Location, otherStone.Location);
+                    int otherRadius = otherStone.Radius;
 
                     if (distance < requiredDistance)
                     {
+                        // Calcola di quanto devi spostarti
+                        double moveDistance = requiredDistance - distance;
+                        errorMessage = $"Too close to another territory stone!{Environment.NewLine}" +
+                                      $"• Current distance: {distance:F1} tiles{Environment.NewLine}" +
+                                      $"• Minimum required: {requiredDistance} tiles{Environment.NewLine}" +
+                                      $"• Other stone radius: {otherRadius} tiles{Environment.NewLine}" +
+                                      $"• Your stone radius: {Radius} tiles{Environment.NewLine}" +
+                                      $"• You need to move at least {moveDistance:F1} tiles away.";
                         return true;
                     }
                 }
@@ -718,7 +797,19 @@ namespace Server.CursedSoulsContent
             return false;
         }
 
-        // Metodo helper per calcolare la distanza
+        // Calcola la distanza minima di separazione tra territori
+        private int CalculateMinimumSeparationDistance()
+        {
+            // Formula: R1 + R2 + MARGINE
+            // Dove R1 è il raggio di questa pietra, R2 è il raggio dell'altra pietra
+            // MARGINE è un buffer di sicurezza (10 tiles)
+            const int SAFETY_MARGIN = 10;
+
+            // Per il controllo iniziale, usiamo il raggio massimo possibile per essere conservativi
+            return (Radius * 2) + (MaxRadius * 2) + SAFETY_MARGIN;
+        }
+
+        // Metodo helper per calcolare la distanza tra due punti
         private double GetDistance(Point3D a, Point3D b)
         {
             int dx = a.X - b.X;
@@ -726,16 +817,18 @@ namespace Server.CursedSoulsContent
             return Math.Sqrt(dx * dx + dy * dy);
         }
 
-        private bool AreaOverlapsWithAnyRegion()
+        private bool AreaOverlapsWithAnyRegionDetailed(out string errorMessage)
         {
+            errorMessage = null;
+
             if (Map == null || Map == Map.Internal || _region == null)
                 return false;
 
             // Calcola l'area del territorio
-            int minX = Location.X - MaxRadius;
-            int minY = Location.Y - MaxRadius;
-            int maxX = Location.X + MaxRadius;
-            int maxY = Location.Y + MaxRadius;
+            int minX = Location.X - Radius;
+            int minY = Location.Y - Radius;
+            int maxX = Location.X + Radius;
+            int maxY = Location.Y + Radius;
 
             // Ottieni tutte le regioni nella mappa
             var allRegions = Region.Regions.Where(r => r.Map == Map).ToList();
@@ -746,18 +839,136 @@ namespace Server.CursedSoulsContent
                 if (region == _region)
                     continue;
 
-                // Salta le regioni di default che non contano (come il mondo intero)
+                // Skip default regions that don't count (like the whole world)
                 //if (region is Regions.DefaultRegion || region.Name == null)
-                //    continue;
+                //if (region is DefaultRegion || string.IsNullOrEmpty(region.Name))
+                    continue;
 
                 // Controlla se si sovrappone con l'area del territorio
                 if (RegionsOverlap(region, minX, minY, maxX, maxY))
                 {
-                    return true; // Trovata una regione sovrapposta
+                    errorMessage = $"Territory overlaps with existing region: {region.Name}{Environment.NewLine}" +
+                                  $"• Territory area: {Radius * 2}x{Radius * 2} tiles{Environment.NewLine}" +
+                                  $"• Move the stone further away from protected areas.";
+                    return true;
                 }
             }
 
             return false;
+        }
+
+        private bool AreaContainsPlayerHousesDetailed(out string errorMessage)
+        {
+            errorMessage = null;
+
+            // Controlla se ci sono case di giocatori nell'area
+            int minX = Location.X - Radius;
+            int minY = Location.Y - Radius;
+            int maxX = Location.X + Radius;
+            int maxY = Location.Y + Radius;
+
+            List<BaseHouse> overlappingHouses = new List<BaseHouse>();
+
+            // Esempio per ModernUO - controlla tutte le case
+            foreach (var house in BaseHouse.AllHouses)
+            {
+                if (house.Map == Map && !house.Deleted)
+                {
+                    // Controlla se la casa è nell'area
+                    var houseLocation = house.Location;
+
+                    if (houseLocation.X >= minX && houseLocation.X <= maxX &&
+                        houseLocation.Y >= minY && houseLocation.Y <= maxY)
+                    {
+                        overlappingHouses.Add(house);
+                    }
+                }
+            }
+
+            if (overlappingHouses.Count > 0)
+            {
+                errorMessage = $"Territory overlaps with {overlappingHouses.Count} player house(s){Environment.NewLine}" +
+                              $"• Territory radius: {Radius} tiles{Environment.NewLine}" +
+                              $"• Move the stone at least {Radius + 5} tiles away from any player house.";
+
+                // Aggiungi dettagli sulle case
+                if (overlappingHouses.Count <= 3) // Mostra dettagli solo per poche case
+                {
+                    foreach (var house in overlappingHouses.Take(3))
+                    {
+                        errorMessage += $"{Environment.NewLine}• {house.GetType().Name} at {house.Location}";
+                    }
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        public void ShowPlacementHelp(Mobile from)
+        {
+            if (from == null)
+                return;
+
+            from.SendMessage(0x3B2, "=== TERRITORY STONE PLACEMENT GUIDE ===");  // Titolo verde scuro
+            from.SendMessage(0x3F, $"1. Minimum distance from other territories:");  // Verde chiaro
+            from.SendMessage(0x3F, $"   • Your radius: {Radius} tiles");  // Verde chiaro
+            from.SendMessage(0x3F, $"   • Required separation: {(Radius * 2) + 10} tiles minimum");  // Verde chiaro
+            from.SendMessage(0x3F, $"2. Clear area required: {Radius * 2}x{Radius * 2} tiles");  // Verde chiaro
+            from.SendMessage(0x3F, $"3. Must be on ground, not in containers");  // Verde chiaro
+            from.SendMessage(0x3F, $"4. Cannot overlap with:");  // Verde chiaro
+            from.SendMessage(0x3F, $"   • Player houses");  // Verde chiaro
+            from.SendMessage(0x3F, $"   • Protected regions");  // Verde chiaro
+            from.SendMessage(0x3F, $"   • Other territory stones");  // Verde chiaro
+            from.SendMessage(0x3F, $"   • Existing territories");  // Verde chiaro
+
+            // Mostra pietre vicine con colori diversi
+            from.SendMessage(0x59, "Nearby territory stones:");  // Giallo per sezione
+
+            int nearbyStones = 0;
+            foreach (Item item in World.Items.Values)
+            {
+                if (item is GuildTerritoryStone otherStone &&
+                    !otherStone.Deleted &&
+                    otherStone != this &&
+                    otherStone.Map == this.Map)
+                {
+                    double distance = GetDistance(this.Location, otherStone.Location);
+                    int requiredDist = CalculateMinimumSeparationDistance();
+
+                    if (distance < 100) // Mostra pietre entro 100 tiles
+                    {
+                        nearbyStones++;
+
+                        // Usa colori diversi in base alla distanza
+                        if (distance < requiredDist)
+                            from.SendMessage(0x22, $"   ✗ {otherStone.OwnerGuild?.Name ?? "Unclaimed"}: {distance:F1} tiles (TOO CLOSE)");  // Rosso
+                        else if (distance < requiredDist + 10)
+                            from.SendMessage(0x84C, $"   ⚠ {otherStone.OwnerGuild?.Name ?? "Unclaimed"}: {distance:F1} tiles (close)");  // Arancione
+                        else
+                            from.SendMessage(0x3F, $"   ✓ {otherStone.OwnerGuild?.Name ?? "Unclaimed"}: {distance:F1} tiles");  // Verde chiaro
+                    }
+                }
+            }
+
+            if (nearbyStones == 0)
+            {
+                from.SendMessage(0x3F, "   No other territory stones nearby.");  // Verde chiaro
+            }
+
+            from.SendMessage(0x3B2, "======================================");  // Verde scuro
+
+            // Stato attuale
+            if (IsAreaClearForTerritory())
+            {
+                from.SendMessage(0x59, "✓ THIS LOCATION IS VALID FOR TERRITORY!");  // Giallo per successo
+            }
+            else
+            {
+                from.SendMessage(0x22, "✗ THIS LOCATION IS NOT VALID!");  // Rosso per errore
+                from.SendMessage(0x84C, "Fix the issues above before placing the stone.");  // Arancione per avviso
+            }
         }
 
         private bool RegionsOverlap(Region otherRegion, int minX, int minY, int maxX, int maxY)
@@ -775,34 +986,7 @@ namespace Server.CursedSoulsContent
             return false;
         }
 
-        private bool AreaContainsPlayerHouses()
-        {
-            // Controlla se ci sono case di giocatori nell'area
-            // Questo è un controllo semplificato - potresti doverlo adattare al tuo sistema di housing
 
-            int minX = Location.X - MaxRadius;
-            int minY = Location.Y - MaxRadius;
-            int maxX = Location.X + MaxRadius;
-            int maxY = Location.Y + MaxRadius;
-
-            // Esempio per ModernUO - controlla tutte le case
-            foreach (var house in BaseHouse.AllHouses)
-            {
-                if (house.Map == Map && !house.Deleted)
-                {
-                    // Controlla se la casa è nell'area
-                    var houseLocation = house.Location;
-
-                    if (houseLocation.X >= minX && houseLocation.X <= maxX &&
-                        houseLocation.Y >= minY && houseLocation.Y <= maxY)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
 
         #endregion REGION/TERRITORY LIFECYCLE
 
@@ -815,13 +999,33 @@ namespace Server.CursedSoulsContent
                 if (IsAreaClearForTerritory(from))
                 {
                     // La stone è su un territorio libero.
-                    if (!Movable && OwnerGuild == null)
+                    if(OwnerGuild == null)
                     {
-                        // La stone e bloccata e non conquistata.
-                        RebuildRegion();
-                        ResetCaptureProgress();
-                        StartCaptureTimer();
+                        if (Movable)
+                        {
+                            from?.SendMessage(0x3B2, "Territory stone is in a good place. The territory si claimable.");
+                        }
+                        else
+                        {
+                            // La stone e bloccata e non conquistata.
+                            RebuildRegion();
+                            ResetCaptureProgress();
+                            StartCaptureTimer();
+                            from?.SendMessage(0x3B2, "Territory stone has been activated. The territory is now claimable.");
+                        }
                     }
+                    else
+                    {
+                        from?.SendMessage(0x3B2, "The stone already have a guild.");
+                    }
+                }
+                else
+                {
+                    StopCaptureTimer();
+                    UnregisterRegion();
+                    ResetCaptureProgress();
+                    Movable = true;
+                    from?.SendMessage(0x22, "The stone must be placed in a clear area to be used.");
                 }
             }
             else
@@ -830,7 +1034,7 @@ namespace Server.CursedSoulsContent
                 UnregisterRegion();
                 ResetCaptureProgress();
                 Movable = true;
-                from?.SendMessage("Put the stone in the ground to use it.");
+                from?.SendMessage(0x22, "The stone must be placed on the ground (not in a container) to be used.");
             }
         }
 
@@ -963,6 +1167,7 @@ namespace Server.CursedSoulsContent
             StopCaptureTimer();
         }
 
+
         #endregion CAPTURE ENGINE (KOTH)
 
         public void WithdrawGoldTreasury(int amount, Mobile to)
@@ -980,23 +1185,6 @@ namespace Server.CursedSoulsContent
             to.SendMessage($"You withdraw {amount} gold from the territory treasury.");
         }
 
-        // ----------------------------
-        //   PROPERTIES / TOOLTIP
-        // ----------------------------
-        public override void GetProperties(IPropertyList list)
-        {
-            base.GetProperties(list);
-
-            list.Add($"Owner: " + (OwnerGuild != null ? OwnerGuild.Name : "Unclaimed"));
-            list.Add($"Radius: {Radius * 2}x{Radius * 2}");
-            if (OwnerGuild == null)
-            {
-                list.Add($"Capture Range: {CaptureRange}");
-                list.Add($"Capture Time: {CaptureTime.TotalMinutes:0.#} min");
-                list.Add($"Capture Progress: {PercentString()}");
-            }
-        }
-
         // Metodi pubblici per la gestione
         public void OpenManagementGump(Mobile from)
         {
@@ -1010,23 +1198,6 @@ namespace Server.CursedSoulsContent
             }
         }
 
-        private Point3D FindSpawnLocation(Region region)
-        {
-            // Trova una posizione valida nella regione
-            Rectangle3D[] area = region.Area;
-            if (area.Length > 0)
-            {
-                var rect = area[0];
-                int x = Utility.RandomMinMax(rect.Start.X, rect.End.X);
-                int y = Utility.RandomMinMax(rect.Start.Y, rect.End.Y);
-                int z = Map.GetAverageZ(x, y);
-
-                return new Point3D(x, y, z);
-            }
-
-            return Location;
-        }
-
         public void UpdateAntiMagicEffect()
         {
             var region = GetRegion();
@@ -1037,32 +1208,6 @@ namespace Server.CursedSoulsContent
             }
         }
 
-        private List<Item> GetItemsInRegion()
-        {
-            var list = new List<Item>();
-            var region = GetRegion();
-            if (region != null)
-            {
-                // ModernUO: usa GetItems()
-                foreach (Item item in region.GetItems())
-                    list.Add(item);
-            }
-            return list;
-        }
-
-        // Aggiungi metodo helper per enumerare mobiles nella regione
-        private List<Mobile> GetMobilesInRegion()
-        {
-            var list = new List<Mobile>();
-            var region = GetRegion();
-            if (region != null)
-            {
-                // ModernUO: usa GetMobiles()
-                foreach (Mobile m in region.GetMobiles())
-                    list.Add(m);
-            }
-            return list;
-        }
 
         #region VENDOR MANAGEMENT
         private BaseVendor CreateVendor(string type)
@@ -1157,6 +1302,7 @@ namespace Server.CursedSoulsContent
         #endregion VENDOR MANAGEMENT
 
         #region GUARD MANAGEMENT
+
         // Create a guard
         private BaseGuard CreateGuard(Type type = null)
         {
@@ -1290,24 +1436,6 @@ namespace Server.CursedSoulsContent
                     // Applica la forza delle guardie
                     ApplyGuardStrength(guard);
                 }
-            }
-        }
-
-        // Versione alternativa più semplice del metodo RemoveGuard
-        public void RemoveGuardLast()
-        {
-            if (Guards.Count > 0)
-            {
-                // Rimuovi l'ULTIMA guardia aggiunta
-                int lastIndex = Guards.Count - 1;
-                var guard = Guards[lastIndex];
-
-                if (guard != null && !guard.Deleted)
-                {
-                    guard.Delete();
-                }
-
-                Guards.RemoveAt(lastIndex);
             }
         }
 
@@ -1536,8 +1664,27 @@ namespace Server.CursedSoulsContent
         [AfterDeserialization(false)]
         private void AfterDeserialization()
         {
+            // Ricostruisci la regione
             RebuildRegion();
-            ToggleOnOffCapture();
+
+            // Verifica se la posizione è ancora valida
+            if (!Movable && Map != null && Map != Map.Internal)
+            {
+                string errorMessage;
+                if (!IsAreaClearForTerritoryDetailed(out errorMessage))
+                {
+                    // Se l'area non è più valida, disattiva la pietra
+                    Movable = true;
+                    StopCaptureTimer();
+
+                    // Log dell'errore (opzionale)
+                    Console.WriteLine($"GuildTerritoryStone {Serial} is now in invalid location: {errorMessage}");
+                }
+                else
+                {
+                    ToggleOnOffCapture();
+                }
+            }
         }
     }
 }
